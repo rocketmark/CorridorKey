@@ -11,8 +11,10 @@ env.bak/
 venv.bak/
 
 # Project Specific
-ClipsForInference/
-Output/
+ClipsForInference/*
+!ClipsForInference/.gitkeep
+Output/*
+!Output/.gitkeep
 .ipynb_checkpoints/
 .DS_Store
 
@@ -29,8 +31,11 @@ Output/
 *.onnx
 
 # Checkpoint Directories
-CorridorKeyModule/checkpoints/
-CorridorKeyModule/IgnoredCheckpoints/
-VideoMaMaInferenceModule/checkpoints/
-gvm_core/weights/
-
+CorridorKeyModule/checkpoints/*
+!CorridorKeyModule/checkpoints/.gitkeep
+CorridorKeyModule/IgnoredCheckpoints/*
+!CorridorKeyModule/IgnoredCheckpoints/.gitkeep
+VideoMaMaInferenceModule/checkpoints/*
+!VideoMaMaInferenceModule/checkpoints/.gitkeep
+gvm_core/weights/*
+!gvm_core/weights/.gitkeep
