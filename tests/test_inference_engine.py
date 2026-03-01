@@ -122,15 +122,15 @@ class TestProcessFrameColorSpace:
 class TestProcessFramePostProcessing:
     """Verify post-processing: despill, despeckle, premultiply, composite."""
 
-    def test_despill_strength_zero_preserves_green(self, sample_frame_rgb, sample_mask, mock_greenformer):
-        """With despill_strength=0, the FG output should have no green removed."""
+    def test_despill_strength_variants_dont_crash(self, sample_frame_rgb, sample_mask, mock_greenformer):
+        """Despill at strength 0.0 and 1.0 should both produce valid outputs."""
         engine = _make_engine_with_mock(mock_greenformer)
         result_no_despill = engine.process_frame(sample_frame_rgb, sample_mask, despill_strength=0.0)
         result_full_despill = engine.process_frame(sample_frame_rgb, sample_mask, despill_strength=1.0)
-        # The FG outputs should differ (unless there's no green to remove,
-        # which is unlikely with random data). The "processed" RGBA will
-        # also differ because it uses the despilled FG.
-        # Just verify both return valid shapes without crashing.
+        # Both despill extremes should produce identically shaped outputs
+        # without raising. (With a mocked model the despill math runs on
+        # uniform 0.6 FG values, so we can't assert meaningful color
+        # differences — that needs a real model integration test.)
         assert result_no_despill["processed"].shape == result_full_despill["processed"].shape
 
     def test_auto_despeckle_toggle(self, sample_frame_rgb, sample_mask, mock_greenformer):

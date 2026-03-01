@@ -50,20 +50,6 @@ def sample_mask():
     return (mask > 0.5).astype(np.float32)
 
 
-@pytest.fixture
-def sample_exr_frame():
-    """Small 64x64 float32 frame simulating EXR data.
-
-    EXR frames are linear and may contain HDR values above 1.0 (highlights,
-    practical lights, etc.). This fixture includes a mix of SDR and HDR values.
-    """
-    rng = np.random.default_rng(99)
-    # Base image in [0, 1] with some HDR spikes up to ~3.0
-    frame = rng.random((64, 64, 3), dtype=np.float32)
-    frame[10:20, 10:20] *= 3.0  # HDR hotspot
-    return frame
-
-
 # ---------------------------------------------------------------------------
 # Clip directory structure fixtures (used by clip_manager tests)
 # ---------------------------------------------------------------------------
