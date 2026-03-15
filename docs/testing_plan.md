@@ -98,8 +98,30 @@ All items are GPU-free and complete.
 
 Behaviors discovered while writing tests that are not documented upstream.
 
-| Finding | Where | Description | Upstream action |
-|---|---|---|---|
-| `clean_matte` is not idempotent at default settings | `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent` | The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists. | PR submitted upstream as nikopueringer/CorridorKey#177 — docstring addition to `clean_matte` in `color_utils.py` |
-| `dilate_mask` numpy and torch backends use structurally different kernels | `color_utils.py:146`, `tests/test_dilate_backend_consistency.py` | numpy uses `cv2.dilate` with `MORPH_ELLIPSE`; torch uses `max_pool2d` (square kernel). The square strictly contains the ellipse, so torch dilation ≥ numpy at every pixel. At radius=15, torch activates 961 pixels vs numpy's 729 — a 32% difference matching the theoretical `4/π` ratio for square vs inscribed circle. Not documented anywhere in the codebase. | Pending — considering a docstring addition to `dilate_mask` in `color_utils.py` |
-| `test_despill_strength_variants_dont_crash` was vacuous and internally contradictory | `tests/test_inference_engine.py::TestProcessFramePostProcessing` | `mock_greenformer` returns uniform gray (R=G=B=0.6), so `spill_amount=0` always — the despill branch never ran. The docstring claimed results should differ at strength 0.0 vs 1.0, but the assertion checked they were equal. Both passed whether despill was working or deleted. | Fixed — inline green-heavy mock forces `spill_amount > 0`; directional assertion on green channel mean. PR submitted upstream as nikopueringer/CorridorKey#179. |
+---
+
+**`test_processed_is_linear_premul_rgba` asserted the wrong formula**
+- **Where:** `tests/test_inference_engine.py::TestProcessFramePostProcessing`
+- **Description:** Expected value used `0.6**2.2 * 0.8` (gamma 2.2 approximation) with `atol=1e-2`. At `FG=0.6`, the gap between gamma 2.2 and piecewise sRGB is `~0.005` — well within that tolerance. A regression back to `x**2.2` in `inference_engine.py` would have passed undetected, directly violating the documented requirement.
+- **Upstream action:** PR merged as nikopueringer/CorridorKey#176 — tightened to `cu.srgb_to_linear(np.float32(0.6)) * 0.8` + `atol=1e-4`.
+
+---
+
+**`clean_matte` is not idempotent at default settings**
+- **Where:** `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent`
+- **Description:** The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists.
+- **Upstream action:** PR submitted as nikopueringer/CorridorKey#177 — docstring addition to `clean_matte` in `color_utils.py`.
+
+---
+
+**`dilate_mask` numpy and torch backends use structurally different kernels**
+- **Where:** `color_utils.py:146`, `tests/test_dilate_backend_consistency.py`
+- **Description:** numpy uses `cv2.dilate` with `MORPH_ELLIPSE`; torch uses `max_pool2d` (square kernel). The square strictly contains the ellipse, so torch dilation ≥ numpy at every pixel. At radius=15, torch activates 961 pixels vs numpy's 729 — a 32% difference matching the theoretical `4/π` ratio for square vs inscribed circle. Not documented anywhere in the codebase.
+- **Upstream action:** Pending — considering a docstring addition to `dilate_mask` in `color_utils.py`.
+
+---
+
+**`test_despill_strength_variants_dont_crash` was vacuous and internally contradictory**
+- **Where:** `tests/test_inference_engine.py::TestProcessFramePostProcessing`
+- **Description:** `mock_greenformer` returns uniform gray (R=G=B=0.6), so `spill_amount=0` always — the despill branch never ran. The docstring claimed results should differ at strength 0.0 vs 1.0, but the assertion checked they were equal. Both passed whether despill was working or deleted.
+- **Upstream action:** PR submitted as nikopueringer/CorridorKey#179 — inline green-heavy mock forces `spill_amount > 0`; directional assertion on green channel mean.
