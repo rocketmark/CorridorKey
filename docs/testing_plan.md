@@ -205,7 +205,7 @@ The docstring says *"Full despill should produce different pixel values than no 
 
 Root cause: `mock_greenformer` always returns `fg=0.6` for all channels (uniform gray, R=G=B=0.6). With average-mode despill, `limit = (R+B)/2 = 0.6 = G`, so `spill_amount = 0` always. Despill at `strength=1.0` and `strength=0.0` produce identical output — not because the test is correct, but because the fixture never creates a green spill pixel. This is the same vacuity trap documented in §4 of this plan for Hypothesis: a strategy that generates no-spill inputs means the spill branch never fires.
 
-**Fix:** Use a fixture with genuine green spill (`R=0.2, G=0.8, B=0.2`) and assert `rgb_full[green_pixel] < rgb_none[green_pixel]`.
+**Fix:** Use an inline green-heavy mock (`R=0.2, G=0.8, B=0.2`) to force `spill_amount > 0`, assert shape validity and in-range on both outputs, and assert `rgb_full[:,:,1].mean() < rgb_none[:,:,1].mean()`. ✓ Fixed. PR submitted upstream as nikopueringer/CorridorKey#179.
 
 ---
 
