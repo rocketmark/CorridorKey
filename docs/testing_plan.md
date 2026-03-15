@@ -193,6 +193,55 @@ Behaviors discovered while writing tests that are not documented upstream.
 
 ---
 
+## Existing Tests to Fix
+
+Pre-existing tests identified as vacuous, internally contradictory, or testing no observable behavior. None of these were written by us.
+
+### HIGH — Vacuous or internally contradictory
+
+**`test_inference_engine.py::TestProcessFramePostProcessing::test_despill_strength_variants_dont_crash`**
+
+The docstring says *"Full despill should produce different pixel values than no despill"* — but the final assertion (`np.testing.assert_allclose(rgb_none, rgb_full, atol=1e-7)`) asserts they are **equal**. Both assertions pass and neither would catch a broken despill implementation.
+
+Root cause: `mock_greenformer` always returns `fg=0.6` for all channels (uniform gray, R=G=B=0.6). With average-mode despill, `limit = (R+B)/2 = 0.6 = G`, so `spill_amount = 0` always. Despill at `strength=1.0` and `strength=0.0` produce identical output — not because the test is correct, but because the fixture never creates a green spill pixel. This is the same vacuity trap documented in §4 of this plan for Hypothesis: a strategy that generates no-spill inputs means the spill branch never fires.
+
+**Fix:** Use a fixture with genuine green spill (`R=0.2, G=0.8, B=0.2`) and assert `rgb_full[green_pixel] < rgb_none[green_pixel]`.
+
+---
+
+**`test_imports.py` — all 8 tests**
+
+Every test does `import X` with no assertion on the module's content. These only verify the Python module is importable.
+
+| Test | What it claims | What it actually proves |
+|---|---|---|
+| `test_import_corridorkey_module` | Module is usable | Module doesn't throw on import |
+| `test_import_color_utils` | `color_utils` is accessible | Same |
+| `test_import_inference_engine` | Engine is accessible | Same |
+| `test_import_model_transformer` | Transformer is accessible | Same |
+| `test_import_gvm_core` | GVM core is accessible | Same |
+| `test_import_gvm_wrapper` | GVM wrapper is accessible | Same |
+| `test_import_videomama` | VideoMaMa is accessible | Same |
+| `test_import_videomama_inference` | Inference is accessible | Same |
+
+These are acceptable as package-installation smoke tests but prove nothing about correctness.
+
+---
+
+### MEDIUM — No observable behavior verified
+
+**`test_cli.py`** — 5 of 6 tests (`test_list_clips_help`, `test_generate_alphas_help`, `test_run_inference_help`, `test_wizard_help`, and one other) only check `exit_code == 0` for `--help` flags. No help content is verified — a command that prints nothing and exits 0 would pass.
+
+**`test_device_utils.py::test_cpu_is_noop`** — calls `clear_cache("cpu")` and verifies no exception is raised. No observable side effect is checked. The function is a no-op by design, so the test passes regardless of implementation.
+
+---
+
+### LOW — Trivially guaranteed
+
+**`test_clip_manager.py::test_empty_sequence`** — tests that an empty directory yields `frame_count == 0`. Guaranteed by the loop; no meaningful logic is exercised.
+
+---
+
 ## Test Organization
 
 ```
