@@ -37,27 +37,22 @@ Each of the items below maps directly to one of those claims.
 | `test_inference_engine.py` | `TestProcessFramePostProcessing` | Despill toggle, despeckle toggle, processed is 4-channel RGBA |
 | `test_gamma_consistency.py` | `TestGammaInconsistency` | Documents intentional gamma 2.2 divergence in third-party paths |
 
+The fixed-example tests cover specific known values well. Their limitation is coverage: a fixed test at `alpha=0.6` proves nothing about `alpha=0.6000001`. For pure math functions with continuous input domains, property-based testing with Hypothesis closes this gap by generating thousands of inputs automatically.
+
+The functions that benefit from PBT are the four pure math functions in `color_utils.py`: `linear_to_srgb`/`srgb_to_linear`, `premultiply`/`unpremultiply`, `composite_straight`/`composite_premul`, and `despill`. The structural tests (`clean_matte`, `dilate_mask`, `apply_garbage_matte`, `rgb_to_yuv`) test discrete behavior against known specs — fixed examples are the right tool there.
+
 ---
 
 ## What to Add
 
-### 1. Fix the existing EXR pipeline test — it proves the wrong thing
+### 1. Fix the existing EXR pipeline test — it proves the wrong thing ✓ Done
 
 **Source claim:** `LLM_HANDOVER.md`, Critical Dataflow Properties, with an explicit Bug History note:
 > *"Do not apply a pure mathematical Gamma 2.2 curve; use the piecewise real sRGB transfer functions defined in `color_utils.py`."*
 
-**Current state:** `test_processed_is_linear_premul_rgba` pins the expected value to `0.6**2.2 * 0.8` — which is the gamma 2.2 approximation the handover doc explicitly says not to use. The test is asserting the wrong thing.
+**Was:** `test_processed_is_linear_premul_rgba` pinned the expected value to `0.6**2.2 * 0.8` — the gamma 2.2 approximation — with `atol=1e-2`. The gap between gamma 2.2 and piecewise sRGB at `FG=0.6` is `~0.005`, well within that tolerance. A regression back to `x**2.2` would have passed undetected.
 
-**Fix:** Replace the hardcoded constant with a call through `srgb_to_linear` directly:
-
-```python
-expected_rgb = cu.srgb_to_linear(np.float32(0.6)) * 0.8
-np.testing.assert_allclose(rgb, expected_rgb, atol=1e-4)
-```
-
-This proves the documented chain — `srgb_to_linear → premultiply → concat` — is correctly wired in the actual pipeline, not just that the output is numerically close to a manually computed approximation. If someone replaces `srgb_to_linear` with `x**2.2` in inference_engine.py, this test will catch it. The current version will not.
-
-**File:** `tests/test_inference_engine.py` (edit existing test, not a new file)
+**Fixed:** Expected value now calls `cu.srgb_to_linear(np.float32(0.6)) * 0.8` with `atol=1e-4`. Submitted upstream as PR against `nikopueringer/CorridorKey`.
 
 ---
 
@@ -88,8 +83,6 @@ These test the resize-up → Lanczos4 resize-down path without a GPU. The mock m
 - **Equal-weight sum is preserved:** For any pixel where despill runs, `R_new + G_new + B_new == R + G + B` within float tolerance. This is what the implementation actually guarantees.
 - **Rec.709 luminance shift is documented and bounded:** Assert that the shift magnitude is `≈ spill_amount × 0.5728`, within a small tolerance. This proves the behavior is deterministic and consistent with the formula, not that it's zero.
 
-This approach proves what the code actually does rather than testing against a false invariant. If someone later changes the redistribution weights, these tests will catch it.
-
 ---
 
 ### 4. Prove the IEC 61966-2-1 sRGB spec holds across the full input domain
@@ -98,18 +91,55 @@ This approach proves what the code actually does rather than testing against a f
 > *"Converts Linear to sRGB using the official piecewise sRGB transfer function."*
 > *"Converts sRGB to Linear using the official piecewise sRGB transfer function."*
 
-**Current gap:** The existing tests use fixed examples. The piecewise spec has invariants that must hold everywhere in [0, 1], not just at the sampled points.
+**Current limitation of fixed tests:** The existing tests sample 8 specific values and 2 breakpoints. The piecewise spec has invariants that must hold everywhere in [0, 1].
 
 **Tests to write (`test_pbt_color_math.py`) using Hypothesis:**
 
-- **Roundtrip identity over full domain** — `@given(st.floats(0.0, 1.0))`: `srgb_to_linear(linear_to_srgb(x)) ≈ x` and `linear_to_srgb(srgb_to_linear(x)) ≈ x` within float32 tolerance. Proves the functions are true inverses, not just approximately so at a few points.
-- **Strict monotonicity** — for any `a < b` in [0, 1], `linear_to_srgb(a) < linear_to_srgb(b)`. A non-monotonic transfer function would silently corrupt color ordering and is one of the failure modes a curve inversion introduces.
-- **Range preservation** — output of `linear_to_srgb` and `srgb_to_linear` stays in [0, 1] for any input in [0, 1].
+#### Properties
 
-Also cover the compositing and premult functions:
-- **Compositing output stays in [0, 1]** — `@given(fg, bg, alpha all in [0,1])`: `composite_straight(fg, bg, alpha)` output is in [0, 1]. This is the downstream invariant that compositing software depends on.
-- **Premult roundtrip over full domain** — `@given(fg in [0,1]^3, alpha in [0.01, 1.0])`: `unpremultiply(premultiply(fg, alpha), alpha) ≈ fg`. Alpha is excluded near zero because color is undefined there.
-- **Despill never increases green, never produces negative green** — `@given(image in [0,1]^3, strength in [0,1])`: `result[1] <= input[1]` and `result[1] >= 0.0`. These are the two unconditional contracts the despill operation makes.
+- **Roundtrip identity over full domain** — `@given(st.floats(0.0, 1.0))`: `srgb_to_linear(linear_to_srgb(x)) ≈ x` and `linear_to_srgb(srgb_to_linear(x)) ≈ x` within float32 tolerance.
+- **Strict monotonicity** — for any `a < b` in [0, 1], `linear_to_srgb(a) < linear_to_srgb(b)`. A non-monotonic transfer function silently corrupts color ordering.
+- **Range preservation** — output of both functions stays in [0, 1] for any input in [0, 1].
+- **Compositing output stays in [0, 1]** — `@given(fg, bg, alpha all in [0,1])`: `composite_straight(fg, bg, alpha)` output is in [0, 1]. This is the invariant compositing software depends on.
+- **Premult roundtrip over full domain** — `@given(fg in [0,1]^3, alpha in [0.01, 1.0])`: `unpremultiply(premultiply(fg, alpha), alpha) ≈ fg`. Alpha excluded near zero because color is undefined there.
+- **Despill never increases green, never produces negative green** — `@given(image in [0,1]^3, strength in [0,1])`: `result[1] <= input[1]` and `result[1] >= 0.0`.
+
+#### Property vacuity tests
+
+Each property above needs a companion test that forces the interesting case to actually fire — proving the property isn't passing vacuously because the relevant branch is never reached.
+
+Without this, a naive Hypothesis strategy for despill will generate inputs where `G < (R+B)/2` most of the time (spill_amount is always zero), so "never increases green" passes trivially without ever exercising the spill path. The vacuity companion uses a targeted strategy that forces the interesting case:
+
+```python
+# Vacuity: force spill_amount > 0 by constructing inputs where G > limit
+@given(
+    rb=st.floats(0.0, 0.4),
+    g=st.floats(0.5, 1.0),   # forces G > (R+B)/2
+    strength=st.floats(0.0, 1.0),
+)
+def test_despill_green_suppression_vacuity(rb, g, strength):
+    """Verify the green-suppression property fires on actual spill pixels."""
+    img = np.array([[rb, g, rb]], dtype=np.float32)
+    result = despill(img, strength=strength)
+    # spill_amount > 0 is guaranteed by construction — assert it actually ran
+    assert result[0, 1] < g or strength == 0.0
+```
+
+Write a vacuity companion for each property in `test_pbt_color_math.py`.
+
+#### Cross-backend differential tests (numpy vs torch)
+
+Every pure math function in `color_utils.py` has both a numpy and a torch path. The existing tests check parity at a handful of specific inputs. Hypothesis proves the two backends agree across the full domain:
+
+```python
+@given(st.floats(0.0, 1.0))
+def test_srgb_numpy_torch_agree(x):
+    np_result = float(cu.linear_to_srgb(np.float32(x)))
+    torch_result = cu.linear_to_srgb(torch.tensor(x, dtype=torch.float32)).item()
+    assert np_result == pytest.approx(torch_result, abs=1e-5)
+```
+
+Write cross-backend differential properties for: `linear_to_srgb`, `srgb_to_linear`, `premultiply`, `unpremultiply`, `composite_straight`, `composite_premul`, and `despill`.
 
 ---
 
@@ -123,7 +153,7 @@ Also cover the compositing and premult functions:
 **Tests to add (`test_color_utils.py`):**
 - **All-zero matte:** `clean_matte(np.zeros(...))` returns all zeros without crashing. The connected-components pass on an empty matte must not produce spurious output.
 - **All-opaque matte:** `clean_matte(np.ones(...))` preserves the region (the single large component is above any reasonable threshold).
-- **Idempotency:** Run `clean_matte` on an already-clean output; the second pass should equal the first within float tolerance. If the cleanup is not stable, repeated passes would degrade mattes in a batch pipeline.
+- **Idempotency:** Run `clean_matte` on an already-clean output; the second pass should equal the first within float tolerance. If cleanup is not stable, repeated passes degrade mattes in a batch pipeline.
 
 ---
 
@@ -140,16 +170,15 @@ Also cover the compositing and premult functions:
 
 ## Priority Order
 
-| Priority | Test | Tied to Documented Claim | Effort |
-|---|---|---|---|
-| 1 | Fix `test_processed_is_linear_premul_rgba` to use `srgb_to_linear` | LLM_HANDOVER.md Bug History | Trivial (edit one line) |
-| 2 | Resolution independence shape tests | README "Resolution Independent" feature | Low |
-| 3 | Hypothesis roundtrip + monotonicity for sRGB | `color_utils.py` docstrings cite IEC spec | Medium |
-| 4 | Hypothesis compositing range + premult roundtrip + despill invariants | `color_utils.py` docstrings | Medium |
-| 5 | Despill redistribution characterization (equal-weight sum, Rec.709 shift) | LLM_HANDOVER.md "luminance-preserving" | Low |
-| 6 | `clean_matte` boundary conditions (empty, full, idempotency) | README "Auto-Cleanup" | Low |
+| # | Test | Tied to Documented Claim | Effort | Done |
+|---|---|---|---|---|
+| 1 | Fix `test_processed_is_linear_premul_rgba` to use `srgb_to_linear` — `0.6**2.2` was the disallowed gamma 2.2 approximation; `atol=1e-2` was too loose to catch a regression. Tightened to `srgb_to_linear()` + `atol=1e-4`. PR submitted upstream. | LLM_HANDOVER.md Bug History | Trivial | ✓ |
+| 2 | Resolution independence shape tests — verify all four outputs match input spatial dimensions at multiple resolutions including non-square and degenerate cases. | README "Resolution Independent" | Low | |
+| 3 | Core Hypothesis properties + vacuity companions — sRGB roundtrip, strict monotonicity, range preservation, compositing output in [0,1], premult roundtrip. Each property paired with a targeted vacuity strategy that forces the interesting branch to fire. | `color_utils.py` IEC spec + docstrings | Medium | |
+| 4 | Despill properties + vacuity + cross-backend differential — green never increases, never negative, equal-weight sum preserved, Rec.709 shift bounded at `spill × 0.5728`. Vacuity companion forces `G > limit`. Cross-backend differential (numpy vs torch) for all 7 pure math functions across full domain. | LLM_HANDOVER.md "luminance-preserving" + dual-backend design | Medium | |
+| 5 | `clean_matte` boundary conditions — all-zero input, all-opaque input, idempotency on already-clean output. | README "Auto-Cleanup" | Low | |
 
-Priority 1 is a bug fix in the existing test suite. Priorities 2–6 are new tests proving documented claims. All six are GPU-free.
+All items are GPU-free.
 
 ---
 
@@ -157,12 +186,15 @@ Priority 1 is a bug fix in the existing test suite. Priorities 2–6 are new tes
 
 ```
 tests/
-  test_color_utils.py              # existing — add clean_matte boundary tests
-  test_inference_engine.py         # existing — fix test_processed_is_linear_premul_rgba
-  test_pbt_color_math.py           # NEW — Hypothesis property tests for sRGB spec,
-                                   #        compositing invariants, despill contracts,
-                                   #        and despill redistribution characterization
-  test_inference_assembly.py       # NEW — resolution independence shape tests
+  test_color_utils.py              # existing — add clean_matte boundary tests (item 8)
+  test_inference_engine.py         # existing — EXR pipeline test fixed (item 1)
+  test_pbt_color_math.py           # NEW — Hypothesis properties (items 3–7):
+                                   #   - sRGB roundtrip, monotonicity, range
+                                   #   - compositing range, premult roundtrip
+                                   #   - despill contracts + redistribution characterization
+                                   #   - vacuity companions for each property
+                                   #   - numpy vs torch differential properties
+  test_inference_assembly.py       # NEW — resolution independence shape tests (item 2)
   test_gamma_consistency.py        # existing — keep as-is, intentional design documented
   test_pbt_backend_resolution.py   # existing — keep as-is
   test_pbt_dep_preservation.py     # existing — keep as-is
