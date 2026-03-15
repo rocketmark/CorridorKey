@@ -6,7 +6,7 @@ The goal is not to find gaps to fill — it is to prove that the explicit design
 
 ---
 
-## What the Documentation Claims (Our Test Targets)
+## Test Targets
 
 Three sources contain explicit correctness claims:
 
@@ -14,7 +14,31 @@ Three sources contain explicit correctness claims:
 - **`README.md`** — states "Resolution Independent" as a product feature bullet
 - **`color_utils.py` docstrings** — describe the IEC 61966-2-1 piecewise sRGB spec, compositing formulas, and alpha semantics
 
-Each of the items below maps directly to one of those claims.
+Each item in the Work Log below maps directly to one of those claims.
+
+---
+
+## Test Organization
+
+```
+tests/
+  test_color_utils.py                 # fixed-example unit tests for color_utils
+  test_inference_engine.py            # pipeline integration tests (mocked model)
+  test_pbt_color_math.py              # Hypothesis properties:
+                                      #   - sRGB roundtrip, monotonicity, range
+                                      #   - compositing range, premult roundtrip
+                                      #   - despill contracts + redistribution characterization
+                                      #   - vacuity companions for each property
+                                      #   - numpy vs torch differential properties
+  test_inference_assembly.py          # resolution independence shape tests
+  test_gamma_consistency.py           # documents intentional gamma 2.2 divergence in third-party paths
+  test_dilate_backend_consistency.py  # documents ellipse (numpy) vs square (torch) kernel divergence
+  test_pbt_backend_resolution.py      # property-based backend resolution priority tests
+  test_pbt_dep_preservation.py        # property-based dependency preservation tests
+  test_clip_manager.py                # clip discovery and asset validation
+```
+
+All tests run without GPU or model weights.
 
 ---
 
@@ -28,7 +52,7 @@ Each of the items below maps directly to one of those claims.
 | `test_color_utils.py` | `TestPremultiply` | Roundtrip, α=0 → zero, α=1 → identity |
 | `test_color_utils.py` | `TestCompositing` | Straight/premul equivalence, α=0/1 boundary cases |
 | `test_color_utils.py` | `TestDespill` | Mode behavior, strength=0 noop, partial green, numpy/torch parity |
-| `test_color_utils.py` | `TestCleanMatte` | Large blob kept, small blob removed, 3D shape preserved |
+| `test_color_utils.py` | `TestCleanMatte` | Large blob kept, small blob removed, 3D shape preserved, boundary conditions |
 | `test_color_utils.py` | `TestDilateMask` | radius=0 noop, expansion, shape preservation |
 | `test_color_utils.py` | `TestApplyGarbageMatte` | None passthrough, zeros outside region, broadcast |
 | `test_color_utils.py` | `TestRgbToYuv` | Rec.601 known values, three layout branches |
@@ -43,120 +67,6 @@ The functions that benefit from PBT are the four pure math functions in `color_u
 
 ---
 
-## What to Add
-
-### 1. Fix the existing EXR pipeline test — it proves the wrong thing 
-
-**Source claim:** `LLM_HANDOVER.md`, Critical Dataflow Properties, with an explicit Bug History note:
-> *"Do not apply a pure mathematical Gamma 2.2 curve; use the piecewise real sRGB transfer functions defined in `color_utils.py`."*
-
-**Was:** `test_processed_is_linear_premul_rgba` pinned the expected value to `0.6**2.2 * 0.8` — the gamma 2.2 approximation — with `atol=1e-2`. The gap between gamma 2.2 and piecewise sRGB at `FG=0.6` is `~0.005`, well within that tolerance. A regression back to `x**2.2` would have passed undetected.
-
-**Fixed:** Expected value now calls `cu.srgb_to_linear(np.float32(0.6)) * 0.8` with `atol=1e-4`. Submitted upstream as PR against `nikopueringer/CorridorKey`.
-
----
-
-### 2. Prove "Resolution Independent" holds
-
-**Source claim:** `README.md`, Features section:
-> *"Resolution Independent: The engine dynamically scales inference to handle 4K plates while predicting using its native 2048×2048 high-fidelity backbone."*
-
-**What to prove:** Given the same mock model, `process_frame` must return outputs whose spatial dimensions exactly match the input — at multiple resolutions, without transposing or padding incorrectly.
-
-**Tests to write (`test_inference_assembly.py`):**
-- Feed a `64×128` input, verify all four outputs are `64×128`
-- Feed a `300×200` input (non-square, non-power-of-two), verify all four outputs are `300×200`
-- Feed a `1×1` input (degenerate case), verify it doesn't crash and returns `1×1`
-
-These test the resize-up → Lanczos4 resize-down path without a GPU. The mock model always returns a `2048×2048` tensor regardless of actual content; the pipeline is responsible for getting the dimensions right.
-
----
-
-### 3. Prove the despill redistribution behavior (characterize, don't assert a false invariant)
-
-**Source claim:** `LLM_HANDOVER.md`:
-> *"Pure math functions for digital compositing. Crucial: Pay attention to... luminance-preserving `despill()`."*
-
-**What "luminance-preserving" means here:** The implementation transfers removed green energy equally to R and B (`r += spill*0.5`, `b += spill*0.5`). This preserves the *equal-weight sum* `R+G+B`, not Rec.709 perceptual luminance. Under Rec.709 weights (0.2126 R, 0.7152 G, 0.0722 B), the shift is `spill × −0.5728` — luminance decreases when green is removed.
-
-**Tests to write (`test_pbt_color_math.py`):**
-- **Equal-weight sum is preserved:** For any pixel where despill runs, `R_new + G_new + B_new == R + G + B` within float tolerance. This is what the implementation actually guarantees.
-- **Rec.709 luminance shift is documented and bounded:** Assert that the shift magnitude is `≈ spill_amount × 0.5728`, within a small tolerance. This proves the behavior is deterministic and consistent with the formula, not that it's zero.
-
----
-
-### 4. Prove the IEC 61966-2-1 sRGB spec holds across the full input domain
-
-**Source claim:** `color_utils.py` docstrings:
-> *"Converts Linear to sRGB using the official piecewise sRGB transfer function."*
-> *"Converts sRGB to Linear using the official piecewise sRGB transfer function."*
-
-**Current limitation of fixed tests:** The existing tests sample 8 specific values and 2 breakpoints. The piecewise spec has invariants that must hold everywhere in [0, 1].
-
-**Tests to write (`test_pbt_color_math.py`) using Hypothesis:**
-
-#### Properties
-
-- **Roundtrip identity over full domain** — `@given(st.floats(0.0, 1.0))`: `srgb_to_linear(linear_to_srgb(x)) ≈ x` and `linear_to_srgb(srgb_to_linear(x)) ≈ x` within float32 tolerance.
-- **Strict monotonicity** — for any `a < b` in [0, 1], `linear_to_srgb(a) < linear_to_srgb(b)`. A non-monotonic transfer function silently corrupts color ordering.
-- **Range preservation** — output of both functions stays in [0, 1] for any input in [0, 1].
-- **Compositing output stays in [0, 1]** — `@given(fg, bg, alpha all in [0,1])`: `composite_straight(fg, bg, alpha)` output is in [0, 1]. This is the invariant compositing software depends on.
-- **Premult roundtrip over full domain** — `@given(fg in [0,1]^3, alpha in [0.01, 1.0])`: `unpremultiply(premultiply(fg, alpha), alpha) ≈ fg`. Alpha excluded near zero because color is undefined there.
-- **Despill never increases green, never produces negative green** — `@given(image in [0,1]^3, strength in [0,1])`: `result[1] <= input[1]` and `result[1] >= 0.0`.
-
-#### Property vacuity tests
-
-Each property above needs a companion test that forces the interesting case to actually fire — proving the property isn't passing vacuously because the relevant branch is never reached.
-
-Without this, a naive Hypothesis strategy for despill will generate inputs where `G < (R+B)/2` most of the time (spill_amount is always zero), so "never increases green" passes trivially without ever exercising the spill path. The vacuity companion uses a targeted strategy that forces the interesting case:
-
-```python
-# Vacuity: force spill_amount > 0 by constructing inputs where G > limit
-@given(
-    rb=st.floats(0.0, 0.4),
-    g=st.floats(0.5, 1.0),   # forces G > (R+B)/2
-    strength=st.floats(0.0, 1.0),
-)
-def test_despill_green_suppression_vacuity(rb, g, strength):
-    """Verify the green-suppression property fires on actual spill pixels."""
-    img = np.array([[rb, g, rb]], dtype=np.float32)
-    result = despill(img, strength=strength)
-    # spill_amount > 0 is guaranteed by construction — assert it actually ran
-    assert result[0, 1] < g or strength == 0.0
-```
-
-Write a vacuity companion for each property in `test_pbt_color_math.py`.
-
-#### Cross-backend differential tests (numpy vs torch)
-
-Every pure math function in `color_utils.py` has both a numpy and a torch path. The existing tests check parity at a handful of specific inputs. Hypothesis proves the two backends agree across the full domain:
-
-```python
-@given(st.floats(0.0, 1.0))
-def test_srgb_numpy_torch_agree(x):
-    np_result = float(cu.linear_to_srgb(np.float32(x)))
-    torch_result = cu.linear_to_srgb(torch.tensor(x, dtype=torch.float32)).item()
-    assert np_result == pytest.approx(torch_result, abs=1e-5)
-```
-
-Write cross-backend differential properties for: `linear_to_srgb`, `srgb_to_linear`, `premultiply`, `unpremultiply`, `composite_straight`, `composite_premul`, and `despill`.
-
----
-
-### 5. Prove `clean_matte` behaves as documented at its boundaries
-
-**Source claim:** `README.md`, Features:
-> *"Auto-Cleanup: Includes a morphological cleanup system to automatically prune any tracking markers or tiny background features that slip through CorridorKey's detection."*
-
-**Current gap:** The existing tests prove it works in the middle of its operating range (large blob kept, small blob removed). The boundaries are untested.
-
-**Tests to add (`test_color_utils.py`):**
-- **All-zero matte:** `clean_matte(np.zeros(...))` returns all zeros without crashing. The connected-components pass on an empty matte must not produce spurious output.
-- **All-opaque matte:** `clean_matte(np.ones(...))` preserves the region (the single large component is above any reasonable threshold).
-- **Idempotency:** Run `clean_matte` on an already-clean output; the second pass should equal the first within float tolerance. If cleanup is not stable, repeated passes degrade mattes in a batch pipeline. **Finding:** The dilation+blur post-processing is intentionally not idempotent — each pass expands the surviving blob's feathered edge further. Idempotency holds only for the connected-components core (`dilation=0, blur_size=0`). The test uses those parameters and the docstring records the finding.
-
----
-
 ## What We Are Not Testing (and Why)
 
 | Item | Reason |
@@ -168,17 +78,19 @@ Write cross-backend differential properties for: `linear_to_srgb`, `srgb_to_line
 
 ---
 
-## Priority Order
+## Work Log
 
-| # | Test | Tied to Documented Claim | Effort | Done |
-|---|---|---|---|---|
-| 1 | Fix `test_processed_is_linear_premul_rgba` to use `srgb_to_linear` — `0.6**2.2` was the disallowed gamma 2.2 approximation; `atol=1e-2` was too loose to catch a regression. Tightened to `srgb_to_linear()` + `atol=1e-4`. PR submitted upstream. | LLM_HANDOVER.md Bug History | Trivial | ✓ |
-| 2 | Resolution independence shape tests — verify all four outputs match input spatial dimensions at multiple resolutions including non-square and degenerate cases. | README "Resolution Independent" | Low | ✓ |
-| 3 | Core Hypothesis properties + vacuity companions — sRGB roundtrip, strict monotonicity, range preservation, compositing output in [0,1], premult roundtrip. Each property paired with a targeted vacuity strategy that forces the interesting branch to fire. | `color_utils.py` IEC spec + docstrings | Medium | ✓ |
-| 4 | Despill properties + vacuity + cross-backend differential — green never increases, never negative, equal-weight sum preserved, Rec.709 shift bounded at `spill × 0.5728`. Vacuity companion forces `G > limit`. Cross-backend differential (numpy vs torch) for all 7 pure math functions across full domain. | LLM_HANDOVER.md "luminance-preserving" + dual-backend design | Medium | ✓ |
-| 5 | `clean_matte` boundary conditions — all-zero input, all-opaque input, idempotency on already-clean output. | README "Auto-Cleanup" | Low | ✓ |
+All items are GPU-free and complete.
 
-All items are GPU-free.
+| # | Work | Tied to Documented Claim | Upstream action |
+|---|---|---|---|
+| 1 | Fix `test_processed_is_linear_premul_rgba` — expected value used `0.6**2.2 * 0.8` (gamma 2.2 approximation) with `atol=1e-2`. The gap between gamma 2.2 and piecewise sRGB at `FG=0.6` is `~0.005`, well within that tolerance — a regression back to `x**2.2` would have passed undetected. Tightened to `cu.srgb_to_linear(np.float32(0.6)) * 0.8` + `atol=1e-4`. | `LLM_HANDOVER.md` Bug History: *"Do not apply a pure mathematical Gamma 2.2 curve."* | PR submitted upstream |
+| 2 | Resolution independence shape tests (`test_inference_assembly.py`) — verify all four outputs match input spatial dimensions at multiple resolutions: `64×128`, `300×200` (non-square, non-power-of-two), `1×1` (degenerate). Tests the resize-up → Lanczos4 resize-down path without a GPU. | `README.md`: *"Resolution Independent: The engine dynamically scales inference to handle 4K plates."* | New file, fork only |
+| 3 | Core Hypothesis properties + vacuity companions (`test_pbt_color_math.py`) — sRGB roundtrip, strict monotonicity, range preservation, compositing output in [0,1], premult roundtrip. Each property paired with a targeted vacuity strategy that forces the interesting branch to fire. | `color_utils.py` IEC 61966-2-1 spec + docstrings | New file, fork only |
+| 4 | Despill properties + vacuity + cross-backend differential (`test_pbt_color_math.py`) — green never increases, never negative, equal-weight sum preserved, Rec.709 shift bounded at `spill × 0.5728`. Vacuity companion forces `G > limit`. Cross-backend differential (numpy vs torch) for all 7 pure math functions across full domain. | `LLM_HANDOVER.md`: *"luminance-preserving `despill()`"* + dual-backend design | New tests, fork only |
+| 5 | `clean_matte` boundary conditions (`test_color_utils.py`) — all-zero input, all-opaque input, idempotency on connected-components core (`dilation=0, blur_size=0`). | `README.md`: *"Auto-Cleanup: morphological cleanup system."* | PR submitted upstream |
+| 6 | `dilate_mask` backend consistency (`test_dilate_backend_consistency.py`) — documents and quantifies ellipse (numpy/cv2) vs square (torch/max_pool2d) kernel divergence. Proves torch is a strict superset, divergence scales with radius, and is ~32% at radius=15 (matching theoretical `4/π` ratio). | Behavioral finding — not documented upstream | New file, fork only |
+| 7 | Fix `test_despill_strength_variants_dont_crash` — the fixture returned uniform gray (R=G=B=0.6), so `spill_amount=0` always and the despill branch never ran. The test also contradicted itself: docstring claimed results should differ, assertion checked they were equal. Replaced with inline green-heavy mock (R=0.2, G=0.8, B=0.2) and directional assertion on the green channel mean. | Vacuous test audit | PR submitted upstream as nikopueringer/CorridorKey#179 |
 
 ---
 
@@ -190,76 +102,4 @@ Behaviors discovered while writing tests that are not documented upstream.
 |---|---|---|---|
 | `clean_matte` is not idempotent at default settings | `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent` | The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists. | PR submitted — docstring addition to `clean_matte` in `color_utils.py` |
 | `dilate_mask` numpy and torch backends use structurally different kernels | `color_utils.py:146`, `tests/test_dilate_backend_consistency.py` | numpy uses `cv2.dilate` with `MORPH_ELLIPSE`; torch uses `max_pool2d` (square kernel). The square strictly contains the ellipse, so torch dilation ≥ numpy at every pixel. At radius=15, torch activates 961 pixels vs numpy's 729 — a 32% difference matching the theoretical `4/π` ratio for square vs inscribed circle. Not documented anywhere in the codebase. | Pending — considering a docstring addition to `dilate_mask` in `color_utils.py` |
-| `test_despill_strength_variants_dont_crash` was vacuous and internally contradictory | `tests/test_inference_engine.py::TestProcessFramePostProcessing`, audit of pre-existing tests | `mock_greenformer` returns uniform gray (R=G=B=0.6), so `spill_amount=0` always — the despill branch never ran. The docstring claimed results should differ at strength 0.0 vs 1.0, but the assertion checked they were equal. Both passed whether despill was working or deleted. | Fix: Use an inline green-heavy mock (R=0.2, G=0.8, B=0.2) to force `spill_amount > 0`, assert shape validity and in-range on both outputs, and assert `rgb_full[:,:,1].mean() < rgb_none[:,:,1].mean()`. ✓ Fixed. PR submitted upstream as nikopueringer/CorridorKey#179. |
-
----
-
-## Existing Tests to Fix
-
-Pre-existing tests identified as vacuous, internally contradictory, or testing no observable behavior. None of these were written by us.
-
-### HIGH — Vacuous or internally contradictory
-
-**`test_inference_engine.py::TestProcessFramePostProcessing::test_despill_strength_variants_dont_crash`**
-
-The docstring says *"Full despill should produce different pixel values than no despill"* — but the final assertion (`np.testing.assert_allclose(rgb_none, rgb_full, atol=1e-7)`) asserts they are **equal**. Both assertions pass and neither would catch a broken despill implementation.
-
-Root cause: `mock_greenformer` always returns `fg=0.6` for all channels (uniform gray, R=G=B=0.6). With average-mode despill, `limit = (R+B)/2 = 0.6 = G`, so `spill_amount = 0` always. Despill at `strength=1.0` and `strength=0.0` produce identical output — not because the test is correct, but because the fixture never creates a green spill pixel. This is the same vacuity trap documented in §4 of this plan for Hypothesis: a strategy that generates no-spill inputs means the spill branch never fires.
-
-**Fix:** Use an inline green-heavy mock (`R=0.2, G=0.8, B=0.2`) to force `spill_amount > 0`, assert shape validity and in-range on both outputs, and assert `rgb_full[:,:,1].mean() < rgb_none[:,:,1].mean()`. ✓ Fixed. PR submitted upstream as nikopueringer/CorridorKey#179.
-
----
-
-**`test_imports.py` — all 8 tests**
-
-Every test does `import X` with no assertion on the module's content. These only verify the Python module is importable.
-
-| Test | What it claims | What it actually proves |
-|---|---|---|
-| `test_import_corridorkey_module` | Module is usable | Module doesn't throw on import |
-| `test_import_color_utils` | `color_utils` is accessible | Same |
-| `test_import_inference_engine` | Engine is accessible | Same |
-| `test_import_model_transformer` | Transformer is accessible | Same |
-| `test_import_gvm_core` | GVM core is accessible | Same |
-| `test_import_gvm_wrapper` | GVM wrapper is accessible | Same |
-| `test_import_videomama` | VideoMaMa is accessible | Same |
-| `test_import_videomama_inference` | Inference is accessible | Same |
-
-These are acceptable as package-installation smoke tests but prove nothing about correctness.
-
----
-
-### MEDIUM — No observable behavior verified
-
-**`test_cli.py`** — 5 of 6 tests (`test_list_clips_help`, `test_generate_alphas_help`, `test_run_inference_help`, `test_wizard_help`, and one other) only check `exit_code == 0` for `--help` flags. No help content is verified — a command that prints nothing and exits 0 would pass.
-
-**`test_device_utils.py::test_cpu_is_noop`** — calls `clear_cache("cpu")` and verifies no exception is raised. No observable side effect is checked. The function is a no-op by design, so the test passes regardless of implementation.
-
----
-
-### LOW — Trivially guaranteed
-
-**`test_clip_manager.py::test_empty_sequence`** — tests that an empty directory yields `frame_count == 0`. Guaranteed by the loop; no meaningful logic is exercised.
-
----
-
-## Test Organization
-
-```
-tests/
-  test_color_utils.py              # existing — add clean_matte boundary tests (item 8)
-  test_inference_engine.py         # existing — EXR pipeline test fixed (item 1)
-  test_pbt_color_math.py           # NEW — Hypothesis properties (items 3–7):
-                                   #   - sRGB roundtrip, monotonicity, range
-                                   #   - compositing range, premult roundtrip
-                                   #   - despill contracts + redistribution characterization
-                                   #   - vacuity companions for each property
-                                   #   - numpy vs torch differential properties
-  test_inference_assembly.py       # NEW — resolution independence shape tests (item 2)
-  test_gamma_consistency.py        # existing — keep as-is, intentional design documented
-  test_dilate_backend_consistency.py  # NEW — documents ellipse (numpy) vs square (torch) kernel divergence
-  test_pbt_backend_resolution.py   # existing — keep as-is
-  test_pbt_dep_preservation.py     # existing — keep as-is
-```
-
-All tests run without GPU or model weights.
+| `test_despill_strength_variants_dont_crash` was vacuous and internally contradictory | `tests/test_inference_engine.py::TestProcessFramePostProcessing` | `mock_greenformer` returns uniform gray (R=G=B=0.6), so `spill_amount=0` always — the despill branch never ran. The docstring claimed results should differ at strength 0.0 vs 1.0, but the assertion checked they were equal. Both passed whether despill was working or deleted. | Fixed — inline green-heavy mock forces `spill_amount > 0`; directional assertion on green channel mean. PR submitted upstream as nikopueringer/CorridorKey#179. |
