@@ -186,9 +186,15 @@ class TestProcessFramePostProcessing:
 
         rgb = processed[:, :, :3]
         alpha = processed[:, :, 3:4]
-        expected_premul = (0.6**2.2) * 0.8
+        # Use srgb_to_linear rather than the gamma 2.2 approximation (x**2.2).
+        # LLM_HANDOVER.md Bug History: "Do not apply a pure mathematical Gamma 2.2
+        # curve; use the piecewise real sRGB transfer functions defined in color_utils.py."
+        # The difference between the two at FG=0.6 is ~0.005, which the previous
+        # atol=1e-2 was too loose to catch — a gamma 2.2 regression would have passed.
+        from CorridorKeyModule.core import color_utils as cu
+        expected_premul = cu.srgb_to_linear(np.float32(0.6)) * 0.8
         np.testing.assert_allclose(alpha, 0.8, atol=1e-5)
-        np.testing.assert_allclose(rgb, expected_premul, atol=1e-2)
+        np.testing.assert_allclose(rgb, expected_premul, atol=1e-4)
 
     def test_mask_2d_vs_3d_input(self, sample_frame_rgb, mock_greenformer):
         """process_frame should accept both [H, W] and [H, W, 1] masks."""
