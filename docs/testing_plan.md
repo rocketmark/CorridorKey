@@ -188,7 +188,8 @@ Behaviors discovered while writing tests that are not documented upstream.
 
 | Finding | Where | Description | Upstream action |
 |---|---|---|---|
-| `clean_matte` is not idempotent at default settings | `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent` | The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists. | Pending — considering a docstring addition to `clean_matte` in `color_utils.py` |
+| `clean_matte` is not idempotent at default settings | `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent` | The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists. | PR submitted — docstring addition to `clean_matte` in `color_utils.py` |
+| `dilate_mask` numpy and torch backends use structurally different kernels | `color_utils.py:146`, `tests/test_dilate_backend_consistency.py` | numpy uses `cv2.dilate` with `MORPH_ELLIPSE`; torch uses `max_pool2d` (square kernel). The square strictly contains the ellipse, so torch dilation ≥ numpy at every pixel. At radius=15, torch activates 961 pixels vs numpy's 729 — a 32% difference matching the theoretical `4/π` ratio for square vs inscribed circle. Not documented anywhere in the codebase. | Pending — considering a docstring addition to `dilate_mask` in `color_utils.py` |
 
 ---
 
@@ -206,6 +207,7 @@ tests/
                                    #   - numpy vs torch differential properties
   test_inference_assembly.py       # NEW — resolution independence shape tests (item 2)
   test_gamma_consistency.py        # existing — keep as-is, intentional design documented
+  test_dilate_backend_consistency.py  # NEW — documents ellipse (numpy) vs square (torch) kernel divergence
   test_pbt_backend_resolution.py   # existing — keep as-is
   test_pbt_dep_preservation.py     # existing — keep as-is
 ```
