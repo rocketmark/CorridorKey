@@ -182,6 +182,16 @@ All items are GPU-free.
 
 ---
 
+## Findings
+
+Behaviors discovered while writing tests that are not documented upstream.
+
+| Finding | Where | Description | Upstream action |
+|---|---|---|---|
+| `clean_matte` is not idempotent at default settings | `color_utils.py:250`, `test_color_utils.py::TestCleanMatte::test_idempotent` | The dilation + Gaussian blur post-processing expands surviving blobs' feathered edges on every call — there is no fixed point. Running cleanup twice on the same matte produces slightly different output. The connected-components core (`dilation=0, blur_size=0`) IS idempotent. Not a bug for the primary use case (one call per frame in batch), but a latent trap for refinement loops. No docstring warning exists. | Pending — considering a docstring addition to `clean_matte` in `color_utils.py` |
+
+---
+
 ## Test Organization
 
 ```
