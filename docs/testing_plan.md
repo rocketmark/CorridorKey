@@ -153,7 +153,7 @@ Write cross-backend differential properties for: `linear_to_srgb`, `srgb_to_line
 **Tests to add (`test_color_utils.py`):**
 - **All-zero matte:** `clean_matte(np.zeros(...))` returns all zeros without crashing. The connected-components pass on an empty matte must not produce spurious output.
 - **All-opaque matte:** `clean_matte(np.ones(...))` preserves the region (the single large component is above any reasonable threshold).
-- **Idempotency:** Run `clean_matte` on an already-clean output; the second pass should equal the first within float tolerance. If cleanup is not stable, repeated passes degrade mattes in a batch pipeline.
+- **Idempotency:** Run `clean_matte` on an already-clean output; the second pass should equal the first within float tolerance. If cleanup is not stable, repeated passes degrade mattes in a batch pipeline. **Finding:** The dilation+blur post-processing is intentionally not idempotent — each pass expands the surviving blob's feathered edge further. Idempotency holds only for the connected-components core (`dilation=0, blur_size=0`). The test uses those parameters and the docstring records the finding.
 
 ---
 
@@ -176,7 +176,7 @@ Write cross-backend differential properties for: `linear_to_srgb`, `srgb_to_line
 | 2 | Resolution independence shape tests — verify all four outputs match input spatial dimensions at multiple resolutions including non-square and degenerate cases. | README "Resolution Independent" | Low | ✓ |
 | 3 | Core Hypothesis properties + vacuity companions — sRGB roundtrip, strict monotonicity, range preservation, compositing output in [0,1], premult roundtrip. Each property paired with a targeted vacuity strategy that forces the interesting branch to fire. | `color_utils.py` IEC spec + docstrings | Medium | ✓ |
 | 4 | Despill properties + vacuity + cross-backend differential — green never increases, never negative, equal-weight sum preserved, Rec.709 shift bounded at `spill × 0.5728`. Vacuity companion forces `G > limit`. Cross-backend differential (numpy vs torch) for all 7 pure math functions across full domain. | LLM_HANDOVER.md "luminance-preserving" + dual-backend design | Medium | ✓ |
-| 5 | `clean_matte` boundary conditions — all-zero input, all-opaque input, idempotency on already-clean output. | README "Auto-Cleanup" | Low | |
+| 5 | `clean_matte` boundary conditions — all-zero input, all-opaque input, idempotency on already-clean output. | README "Auto-Cleanup" | Low | ✓ |
 
 All items are GPU-free.
 
