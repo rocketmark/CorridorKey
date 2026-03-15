@@ -45,7 +45,7 @@ The functions that benefit from PBT are the four pure math functions in `color_u
 
 ## What to Add
 
-### 1. Fix the existing EXR pipeline test — it proves the wrong thing ✓ Done
+### 1. Fix the existing EXR pipeline test — it proves the wrong thing 
 
 **Source claim:** `LLM_HANDOVER.md`, Critical Dataflow Properties, with an explicit Bug History note:
 > *"Do not apply a pure mathematical Gamma 2.2 curve; use the piecewise real sRGB transfer functions defined in `color_utils.py`."*
