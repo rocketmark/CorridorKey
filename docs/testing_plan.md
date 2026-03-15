@@ -2,7 +2,7 @@
 
 ## Guiding Principle
 
-The goal is not to find gaps to fill — it is to prove that the explicit design decisions and documented properties in this codebase actually hold. The developers have made deliberate choices (the gamma inconsistency in third-party paths, the MPS fallback behavior) that are already documented and tested. We are not here to second-guess those. We are here to write tests that confirm the things the documentation *claims* are true.
+The goal is not to find gaps to fill. It is to prove that the explicit design decisions and documented properties in this codebase actually hold. The developers have made deliberate choices (the gamma inconsistency in third-party paths, the MPS fallback behavior) that are already documented and tested. We are not here to second-guess those. We are here to write tests that confirm the things the documentation *claims* are true.
 
 ---
 
