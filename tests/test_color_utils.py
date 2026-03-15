@@ -397,7 +397,7 @@ class TestCleanMatte:
         """
         matte = np.zeros((100, 100), dtype=np.float32)
         matte[20:80, 20:80] = 1.0  # large blob kept
-        matte[5:8, 5:8] = 1.0      # small blob removed on first pass
+        matte[5:8, 5:8] = 1.0  # small blob removed on first pass
         first = cu.clean_matte(matte.copy(), area_threshold=300, dilation=0, blur_size=0)
         second = cu.clean_matte(first.copy(), area_threshold=300, dilation=0, blur_size=0)
         np.testing.assert_allclose(first, second, atol=1e-6)
